@@ -125,14 +125,11 @@ class EponaSwitch(MultiportNode):
 
         #verify checksum
         if not verify_checksum(frame):
-            #print("Epona switch: failed checksum")
             return
         
         #extract fields 
         src = frame[:6]
         dest = frame[6:12]
-        protonum = frame[12:14]
-        data = frame[15:]
 
         self.frame_map[src] = port #store mapping 
         dest_port = self.frame_map.get(dest)
@@ -142,13 +139,11 @@ class EponaSwitch(MultiportNode):
 
             #drop frames frwrd to itself
             if dest_port == port:
-                #print('EponaSwitch: dest prt matches src prt')
                 return
 
             self.forward(dest_port, frame)
         #handle broadcast
         else:
-
             #send to all ports excluding current port
             for p in range(self.nports): 
                 if p != port:
