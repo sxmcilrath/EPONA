@@ -11,6 +11,8 @@ class EponaAdapter(Adapter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Add any initialization you need below this line
+        
+        self.ip_map = BlockingDict() #IP -> MAC
 
     def output(self, protonum: int, dst, dgram):
         """
@@ -31,20 +33,38 @@ class EponaAdapter(Adapter):
         
         if not verify_checksum(frame):
             #drop frame
-            print('bad checksum')
             return
 
-        #verify you are intended reciever 
-        print(f'src hw addr {self.hwaddr}')
-        print(f'broadcast MAC: {BROADCAST_MAC}')
-        print(f'frame dest addr {frame[6:12]}')
-        print(self.hwaddr == frame[6:12])
+        protonum = int.from_bytes(frame[12:14], 'big')
         
-        if self.hwaddr != frame[6:12] and frame[6:12] != BROADCAST_MAC:
-            print('wrong reciever')
+        #handle MARE
+        if protonum == MARE_PROTONUM:
+            reply_code = frame[19] #realizing I can prob infer this from whether its broadcast or not
+            src_mac = frame[:6]
+
+            ip_bytes = frame[15:19]
+            
+            #is it a request or reply?
+            if reply_code == 0: #request
+                                
+                ip = IPv4Address(ip_bytes)
+                
+                #if request for this ip --> send reply
+                if ip == self.iface.ip:
+                    reply_flag = 1
+                    mare_bytes: bytes = ip_bytes + reply_flag.to_bytes(1, 'big')
+
+                    self.output(MARE_PROTONUM, src_mac, mare_bytes)
+            else: #reply
+                self.ip_map.put(ip_bytes, src_mac)
             return
 
-        print('correct recv')
+
+        #NON-MARE handling
+        #verify you are intended reciever 
+        if self.hwaddr != frame[6:12] and frame[6:12] != BROADCAST_MAC:
+            return
+
         #send on network
         self.input(int.from_bytes(frame[12:14], 'big'), frame[15:])
 
@@ -54,7 +74,41 @@ class EponaAdapter(Adapter):
         destination host.  Provides the protocol number, destination IPv4
         address as four bytes, and datagram contents as bytes.
         """
-        pass
+        #first check for in network
+        ip = IPv4Address(addr)
+
+        #send to gateway if not in network
+        if ip not in self.iface.network: 
+            addr = self.gateway.packed #convert to bytes
+        
+        ##initial check
+        mac_addr = self.ip_map.get(addr, timeout=0.1)
+
+        #we have the mapping
+        if mac_addr != None:
+           self.output(protonum, mac_addr, dgram)
+           return 
+        
+        reply_flag: int = 0
+        mare_bytes: bytes =  addr + reply_flag.to_bytes(1, 'big')
+
+        to_count = 0
+        while(to_count < 2):
+            
+            #we do not have the mac addr --> broadcast
+            self.output(MARE_PROTONUM, BROADCAST_MAC, mare_bytes) #need to send ip addr for MARE protocol
+            
+            #resend if we dont get it
+            mac_addr = self.ip_map.get(key=addr,timeout=0.1)
+            if mac_addr == None:
+                to_count += 1
+                continue
+            else:
+                self.output(protonum, mac_addr, dgram)
+                return
+            
+        raise self.NoRouteToHost
+
 
 
 class EponaSwitch(MultiportNode):
@@ -71,7 +125,7 @@ class EponaSwitch(MultiportNode):
 
         #verify checksum
         if not verify_checksum(frame):
-            print("Epona switch: failed checksum")
+            #print("Epona switch: failed checksum")
             return
         
         #extract fields 
@@ -88,7 +142,7 @@ class EponaSwitch(MultiportNode):
 
             #drop frames frwrd to itself
             if dest_port == port:
-                print('EponaSwitch: dest prt matches src prt')
+                #print('EponaSwitch: dest prt matches src prt')
                 return
 
             self.forward(dest_port, frame)
