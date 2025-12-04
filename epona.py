@@ -61,13 +61,45 @@ class EponaSwitch(MultiportNode):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Add any initialization you need below this line
+        self.frame_map = {}
 
     def rx(self, port, frame):
         """
         Called when a frame arrives at any port.  Provides the port number as
         an int and the frame contents as bytes.
         """
-        pass
+
+        #verify checksum
+        if not verify_checksum(frame):
+            print("Epona switch: failed checksum")
+            return
+        
+        #extract fields 
+        src = frame[:6]
+        dest = frame[6:12]
+        protonum = frame[12:14]
+        data = frame[15:]
+
+        self.frame_map[src] = port #store mapping 
+        dest_port = self.frame_map.get(dest)
+
+        #handle specific dest that isn't itself
+        if dest_port != None:
+
+            #drop frames frwrd to itself
+            if dest_port == port:
+                print('EponaSwitch: dest prt matches src prt')
+                return
+
+            self.forward(dest_port, frame)
+        #handle broadcast
+        else:
+
+            #send to all ports excluding current port
+            for p in range(self.nports): 
+                if p != port:
+                    self.forward(p, frame)
+        
 
 
 def get_checksum(precheck: bytes):
